@@ -30,7 +30,11 @@ final class PomodoroEngine {
 
     var onStateChanged: ((PomodoroState) -> Void)?
     var onTick: (() -> Void)?
-    var onSessionSealed: (() -> Void)?
+    /// Fired when a new session is created (not on extensions).
+    var onSessionStarted: ((Session) -> Void)?
+    /// `interactive` is false when sealing during app termination, where no
+    /// follow-up dialog can be shown.
+    var onSessionSealed: ((Session, _ interactive: Bool) -> Void)?
 
     init(config: Config, store: SessionStore) {
         self.config = config
@@ -127,11 +131,28 @@ final class PomodoroEngine {
     func appWillTerminate() {
         switch state {
         case .runningTask:
-            sealSession(completed: false)
+            sealSession(completed: false, interactive: false)
         case .taskCompletePrompt:
-            sealSession(completed: true)
+            sealSession(completed: true, interactive: false)
         default:
             break
+        }
+    }
+
+    /// Attach a goal to a session. Normally it is the in-flight one, but the
+    /// session may have been sealed while the goal dialog was still open.
+    func setGoal(_ goal: String?, for id: UUID) {
+        let trimmed = goal?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (trimmed?.isEmpty == false) ? trimmed : nil
+        if var session = currentSession, session.id == id {
+            // Must live on the engine's copy too, or sealSession would
+            // overwrite the stored goal with nil.
+            session.goal = value
+            currentSession = session
+            store.update(session)
+        } else if value != nil, var sealed = store.sessions.first(where: { $0.id == id }) {
+            sealed.goal = value
+            store.update(sealed)
         }
     }
 
@@ -152,20 +173,22 @@ final class PomodoroEngine {
     // MARK: - Internals
 
     private func beginTask() {
-        let session = Session(id: UUID(), start: Date(), end: nil, completed: false)
+        let session = Session(id: UUID(), start: Date(), end: nil, completed: false,
+                              goal: nil, goalAchieved: nil, endComment: nil)
         currentSession = session
         store.append(session)
         state = .runningTask(endDate: Date().addingTimeInterval(config.taskDuration))
+        onSessionStarted?(session)
     }
 
-    private func sealSession(completed: Bool) {
+    private func sealSession(completed: Bool, interactive: Bool = true) {
         guard var session = currentSession else { return }
         session.end = completed ? (pendingFinish ?? Date()) : Date()
         session.completed = completed
         store.update(session)
         currentSession = nil
         pendingFinish = nil
-        onSessionSealed?()
+        onSessionSealed?(session, interactive)
     }
 
     private func stateDidChange() {

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var prompts: FullscreenPromptController!
     private var activity: ActivityMonitor!
     private var summary: SummaryWindowController!
+    private var dialogs: SessionDialogController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         config = Config.load()
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBar = StatusBarController(engine: engine, config: config)
         prompts = FullscreenPromptController(config: config)
         summary = SummaryWindowController()
+        dialogs = SessionDialogController()
         hotkey = HotkeyManager()
         activity = ActivityMonitor(config: config)
 
@@ -43,8 +45,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.onTick = { [weak self] in
             self?.statusBar.update()
         }
-        engine.onSessionSealed = { [weak self] in
-            self?.summary.reloadIfVisible()
+        engine.onSessionStarted = { [weak self] session in
+            guard let self else { return }
+            self.dialogs.askGoal { goal in
+                self.engine.setGoal(goal, for: session.id)
+                self.summary.reloadIfVisible()
+            }
+        }
+        engine.onSessionSealed = { [weak self] session, interactive in
+            guard let self else { return }
+            self.summary.reloadIfVisible()
+            guard interactive else { return } // quit path: no dialog
+            self.dialogs.askOutcome(for: session) { achieved, comment in
+                self.store.setOutcome(id: session.id, achieved: achieved, comment: comment)
+                self.summary.reloadIfVisible()
+            }
         }
 
         statusBar.onShowSummary = { [weak self] in
@@ -55,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.engine.hotkeyPressed()
         }
 
-        summary.todaySessions = { [weak self] in
-            self?.store.todaySessions() ?? []
+        summary.allSessions = { [weak self] in
+            self?.store.sessions ?? []
         }
         summary.currentSessionID = { [weak self] in
             self?.engine.currentSession?.id
@@ -64,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         activity.shouldNag = { [weak self] in
             guard let self else { return false }
-            return self.engine.state == .idle && !self.prompts.isVisible
+            return self.engine.state == .idle && !self.prompts.isVisible && !self.dialogs.isShowing
         }
         activity.onSustainedActivity = { [weak self] in
             self?.prompts.show(.startNag)

@@ -5,10 +5,13 @@ struct Session: Codable, Identifiable {
     let start: Date
     var end: Date?
     var completed: Bool
+    var goal: String?
+    var goalAchieved: Bool?
+    var endComment: String?
 }
 
 /// Persists pomodoro sessions as JSON in ~/Library/Application Support/PomodoroBar/.
-/// The full history is kept (pruned after 30 days); the summary window scopes to today.
+/// The full history is kept (pruned after 30 days) and shown in the history window.
 final class SessionStore {
     private(set) var sessions: [Session] = []
     private let fileURL: URL
@@ -32,8 +35,12 @@ final class SessionStore {
         save()
     }
 
-    func todaySessions() -> [Session] {
-        sessions.filter { Calendar.current.isDateInToday($0.start) }
+    /// Record the goal outcome for an already-sealed session.
+    func setOutcome(id: UUID, achieved: Bool?, comment: String?) {
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[index].goalAchieved = achieved
+        sessions[index].endComment = comment
+        save()
     }
 
     private func load() {

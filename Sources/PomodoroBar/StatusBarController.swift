@@ -11,6 +11,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let stopItem = NSMenuItem()
     private let extendItem = NSMenuItem()
     private let breakItem = NSMenuItem()
+    private let loginItem = NSMenuItem()
 
     var onShowSummary: (() -> Void)?
 
@@ -66,12 +67,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let summaryItem = NSMenuItem(title: "Today's Summary…",
+        let summaryItem = NSMenuItem(title: "History…",
                                      action: #selector(showSummary), keyEquivalent: "")
         summaryItem.target = self
         menu.addItem(summaryItem)
 
         menu.addItem(.separator())
+
+        loginItem.title = "Start at Login"
+        loginItem.target = self
+        loginItem.action = #selector(toggleLoginItem)
+        menu.addItem(loginItem)
 
         let quitItem = NSMenuItem(title: "Quit PomodoroBar",
                                   action: #selector(quit), keyEquivalent: "q")
@@ -83,6 +89,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         headerItem.title = headerText()
+
+        // Refresh on every open: the user can also toggle it in System Settings.
+        loginItem.isEnabled = LoginItemManager.isAvailable
+        loginItem.state = LoginItemManager.isEnabled ? .on : .off
+        loginItem.toolTip = LoginItemManager.isAvailable ? nil
+            : "Available only when running from PomodoroBar.app (scripts/make-app.sh)"
 
         switch engine.state {
         case .idle:
@@ -133,6 +145,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showSummary() { onShowSummary?() }
+    @objc private func toggleLoginItem() { try? LoginItemManager.setEnabled(!LoginItemManager.isEnabled) }
     @objc private func quit() { NSApp.terminate(nil) }
 
     // MARK: - Formatting
