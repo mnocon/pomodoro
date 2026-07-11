@@ -11,6 +11,9 @@ struct Config {
     let activityWindow: TimeInterval
     let snoozeDuration: TimeInterval
     let pollInterval: TimeInterval
+    /// How long the keyboard must be quiet before a fullscreen prompt
+    /// accepts input — prevents in-flight typing from dismissing it.
+    let promptGuard: TimeInterval
 
     static func load() -> Config {
         let defaults = UserDefaults.standard
@@ -24,7 +27,8 @@ struct Config {
             extendIncrement: seconds("extendSeconds", default: 5 * 60),
             activityWindow: seconds("activityWindowSeconds", default: 30),
             snoozeDuration: seconds("snoozeSeconds", default: 5 * 60),
-            pollInterval: seconds("pollSeconds", default: 5)
+            pollInterval: seconds("pollSeconds", default: 5),
+            promptGuard: seconds("promptGuardSeconds", default: 1.5)
         )
     }
 

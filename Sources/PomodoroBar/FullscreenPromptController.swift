@@ -26,6 +26,17 @@ final class FullscreenPromptController: NSObject {
     private var windows: [PromptWindow] = []
     private(set) var currentKind: PromptKind?
 
+    // Input guard: swallow keystrokes that are in flight when the prompt
+    // appears, so typing can't blindly trigger Return/Esc. Every keystroke
+    // while locked re-arms the timer; the prompt unlocks only after the
+    // keyboard has been quiet for `config.promptGuard`.
+    private(set) var isLocked = false
+    private var guardTimer: Timer?
+    private var keyMonitor: Any?
+    private var primaryButton: NSButton?
+    private var secondaryButton: NSButton?
+    private var hintLabel: NSTextField?
+
     var isVisible: Bool { currentKind != nil }
 
     var onPrimary: ((PromptKind) -> Void)?
@@ -54,14 +65,71 @@ final class FullscreenPromptController: NSObject {
             window.orderFront(nil)
         }
         keyWindow?.makeKeyAndOrderFront(nil)
+        engageGuard()
     }
 
     func hide() {
+        disengageGuard()
         for window in windows {
             window.orderOut(nil)
         }
         windows = []
         currentKind = nil
+        primaryButton = nil
+        secondaryButton = nil
+        hintLabel = nil
+    }
+
+    // MARK: - Input guard
+
+    private func engageGuard() {
+        isLocked = true
+        updateGuardUI()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self, self.isLocked, self.isVisible else { return event }
+            if event.type == .keyDown {
+                self.restartGuardTimer() // still typing — stay locked
+            }
+            return nil // swallow: no Return/Esc/key-equivalent gets through
+        }
+        restartGuardTimer()
+    }
+
+    private func restartGuardTimer() {
+        guardTimer?.invalidate()
+        guardTimer = Timer.scheduledTimer(withTimeInterval: config.promptGuard, repeats: false) { [weak self] _ in
+            self?.unlockGuard()
+        }
+    }
+
+    private func unlockGuard() {
+        isLocked = false
+        removeKeyMonitor()
+        guardTimer?.invalidate()
+        guardTimer = nil
+        updateGuardUI()
+    }
+
+    private func disengageGuard() {
+        isLocked = false
+        removeKeyMonitor()
+        guardTimer?.invalidate()
+        guardTimer = nil
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+
+    private func updateGuardUI() {
+        primaryButton?.isEnabled = !isLocked
+        secondaryButton?.isEnabled = !isLocked
+        hintLabel?.stringValue = isLocked
+            ? "⌨ Keyboard ignored while you finish typing…"
+            : "Esc to dismiss"
     }
 
     // MARK: - Window construction
@@ -81,7 +149,7 @@ final class FullscreenPromptController: NSObject {
         window.backgroundColor = NSColor.black.withAlphaComponent(isMain ? 0.85 : 0.6)
         window.setFrame(screen.frame, display: true)
         window.onCancel = { [weak self] in
-            guard let self, let kind = self.currentKind else { return }
+            guard let self, !self.isLocked, let kind = self.currentKind else { return }
             self.onDismiss?(kind)
         }
         if isMain {
@@ -106,9 +174,11 @@ final class FullscreenPromptController: NSObject {
         let primary = NSButton(title: texts.primary, target: self, action: #selector(primaryClicked))
         primary.keyEquivalent = "\r"
         primary.controlSize = .large
+        primaryButton = primary
 
         let secondary = NSButton(title: texts.secondary, target: self, action: #selector(secondaryClicked))
         secondary.controlSize = .large
+        secondaryButton = secondary
 
         let buttons = NSStackView(views: [secondary, primary])
         buttons.orientation = .horizontal
@@ -118,6 +188,7 @@ final class FullscreenPromptController: NSObject {
         hint.font = .systemFont(ofSize: 13)
         hint.textColor = NSColor.white.withAlphaComponent(0.45)
         hint.alignment = .center
+        hintLabel = hint
 
         let stack = NSStackView(views: [title, body, buttons, hint])
         stack.orientation = .vertical
@@ -157,12 +228,12 @@ final class FullscreenPromptController: NSObject {
     }
 
     @objc private func primaryClicked() {
-        guard let kind = currentKind else { return }
+        guard !isLocked, let kind = currentKind else { return }
         onPrimary?(kind)
     }
 
     @objc private func secondaryClicked() {
-        guard let kind = currentKind else { return }
+        guard !isLocked, let kind = currentKind else { return }
         onSecondary?(kind)
     }
 }
