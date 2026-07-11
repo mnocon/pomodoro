@@ -3,7 +3,7 @@ import AppKit
 /// "Pomodoro History" window: all recorded sessions grouped by day (newest day
 /// first) with per-day totals in the group headers, plus a today-total footer.
 /// Refreshes live while visible.
-final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate, NSMenuDelegate {
     private enum Row {
         case header(String)
         case session(Session)
@@ -13,6 +13,7 @@ final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableVie
     private var tableView: NSTableView!
     private var totalLabel: NSTextField!
     private var refreshTimer: Timer?
+    private var keyMonitor: Any?
     private var rows: [Row] = []
 
     var allSessions: (() -> [Session])?
@@ -40,12 +41,19 @@ final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableVie
 
     func reloadIfVisible() {
         guard window?.isVisible == true else { return }
+        // Reloading replaces cell views, which would wipe a text selection the
+        // user is making (e.g. to copy a goal or comment) — wait until done.
+        if window?.firstResponder is NSTextView { return }
         reload()
     }
 
     func windowWillClose(_ notification: Notification) {
         refreshTimer?.invalidate()
         refreshTimer = nil
+    }
+
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
 
     // MARK: - Table
@@ -72,6 +80,9 @@ final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableVie
             guard let column = tableColumn else { return nil }
             let cell = reusableCell(in: tableView, identifier: column.identifier) { field in
                 field.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+                if column.identifier.rawValue == "goal" || column.identifier.rawValue == "comment" {
+                    field.isSelectable = true
+                }
             }
             let value = text(for: session, column: column.identifier.rawValue)
             cell.textField?.stringValue = value
@@ -105,6 +116,37 @@ final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableVie
             field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
         return cell
+    }
+
+    // MARK: - Copying
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.item(at: 0)?.isEnabled = clickedCellValue() != nil
+    }
+
+    @objc private func copyClickedCell(_ sender: Any?) {
+        guard let value = clickedCellValue() else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    /// Full text of the right-clicked cell, or nil if there is nothing to copy.
+    /// Goal and comment are copied raw, without the ✓/✗ decoration.
+    private func clickedCellValue() -> String? {
+        let rowIndex = tableView.clickedRow
+        let columnIndex = tableView.clickedColumn
+        guard rowIndex >= 0, columnIndex >= 0,
+              case .session(let session) = rows[rowIndex] else { return nil }
+        let value: String
+        switch tableView.tableColumns[columnIndex].identifier.rawValue {
+        case "goal":
+            value = session.goal ?? ""
+        case "comment":
+            value = session.endComment ?? ""
+        case let column:
+            value = text(for: session, column: column)
+        }
+        return value.isEmpty || value == "—" ? nil : value
     }
 
     // MARK: - Internals
@@ -230,7 +272,28 @@ final class SummaryWindowController: NSObject, NSTableViewDataSource, NSTableVie
         }
         table.dataSource = self
         table.delegate = self
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let copyItem = NSMenuItem(title: "Copy", action: #selector(copyClickedCell(_:)), keyEquivalent: "")
+        copyItem.target = self
+        menu.addItem(copyItem)
+        menu.delegate = self
+        table.menu = menu
         tableView = table
+
+        // The app has no main menu (accessory activation policy), so ⌘C has no
+        // key equivalent to route through — handle it for text selections here.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.window === self.window,
+                  event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
+                  event.charactersIgnoringModifiers == "c",
+                  let editor = self.window?.firstResponder as? NSTextView,
+                  editor.selectedRange().length > 0 else { return event }
+            editor.copy(nil)
+            return nil
+        }
 
         let scroll = NSScrollView()
         scroll.documentView = table
