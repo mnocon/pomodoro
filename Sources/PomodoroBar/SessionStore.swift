@@ -8,6 +8,12 @@ struct Session: Codable, Identifiable {
     var goal: String?
     var goalAchieved: Bool?
     var endComment: String?
+    /// Set when the session was started in task mode: the NocoDB row this
+    /// pomodoro belongs to. `goal` carries that task's title.
+    var nocodbTaskID: Int?
+    /// Whether task mode was active when this session began. The end-of-session
+    /// comment only reaches NocoDB if the mode still matches at seal time.
+    var taskModeAtStart: Bool?
 }
 
 /// Persists pomodoro sessions as JSON in ~/Library/Application Support/PomodoroBar/.
@@ -16,11 +22,17 @@ final class SessionStore {
     private(set) var sessions: [Session] = []
     private let fileURL: URL
 
-    init() {
+    /// ~/Library/Application Support/PomodoroBar, created on demand. Also home
+    /// to nocodb.json, which is why it is shared rather than private.
+    static func supportDirectory() -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PomodoroBar", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appendingPathComponent("sessions.json")
+        return dir
+    }
+
+    init() {
+        fileURL = Self.supportDirectory().appendingPathComponent("sessions.json")
         load()
     }
 
@@ -40,6 +52,13 @@ final class SessionStore {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         sessions[index].goalAchieved = achieved
         sessions[index].endComment = comment
+        save()
+    }
+
+    /// Drop a session outright — used when the task dialog is cancelled, which
+    /// means the pomodoro never really started.
+    func remove(id: UUID) {
+        sessions.removeAll { $0.id == id }
         save()
     }
 

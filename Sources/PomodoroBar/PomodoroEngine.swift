@@ -35,6 +35,8 @@ final class PomodoroEngine {
     /// `interactive` is false when sealing during app termination, where no
     /// follow-up dialog can be shown.
     var onSessionSealed: ((Session, _ interactive: Bool) -> Void)?
+    /// Whether task mode is active right now; recorded on every new session.
+    var isTaskModeActive: (() -> Bool)?
 
     init(config: Config, store: SessionStore) {
         self.config = config
@@ -156,6 +158,31 @@ final class PomodoroEngine {
         }
     }
 
+    /// Attach the picked NocoDB task to a session, mirroring `setGoal`: the
+    /// task's title doubles as the session goal so History renders unchanged.
+    func setTask(_ task: NocoDBTask, for id: UUID) {
+        if var session = currentSession, session.id == id {
+            session.nocodbTaskID = task.id
+            session.goal = task.title
+            currentSession = session
+            store.update(session)
+        } else if var sealed = store.sessions.first(where: { $0.id == id }) {
+            sealed.nocodbTaskID = task.id
+            sealed.goal = task.title
+            store.update(sealed)
+        }
+    }
+
+    /// The task dialog was cancelled (or could not be answered): the session
+    /// never really started, so discard it rather than record a stub.
+    func abortSession(id: UUID) {
+        guard let session = currentSession, session.id == id else { return }
+        currentSession = nil
+        pendingFinish = nil
+        store.remove(id: session.id)
+        state = .idle
+    }
+
     /// Force an immediate timer evaluation (used after wake from sleep).
     func forceTick() {
         tick()
@@ -174,7 +201,9 @@ final class PomodoroEngine {
 
     private func beginTask() {
         let session = Session(id: UUID(), start: Date(), end: nil, completed: false,
-                              goal: nil, goalAchieved: nil, endComment: nil)
+                              goal: nil, goalAchieved: nil, endComment: nil,
+                              nocodbTaskID: nil,
+                              taskModeAtStart: isTaskModeActive?() ?? false)
         currentSession = session
         store.append(session)
         state = .runningTask(endDate: Date().addingTimeInterval(config.taskDuration))

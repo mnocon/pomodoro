@@ -12,8 +12,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let extendItem = NSMenuItem()
     private let breakItem = NSMenuItem()
     private let loginItem = NSMenuItem()
+    private let taskModeItem = NSMenuItem()
+
+    /// Menu rows for the task list, tracked so they can be swapped out wholesale
+    /// each time the menu opens.
+    private var taskItems: [NSMenuItem] = []
 
     var onShowSummary: (() -> Void)?
+
+    // Task mode. All optional/defaulted so the controller stays usable
+    // (and testable) without a NocoDB connection wired up.
+    var taskModeSetting: () -> TaskModeSetting = { .auto }
+    var isTaskModeActive: () -> Bool = { false }
+    var taskList: () -> [NocoDBTask] = { [] }
+    var onSelectTaskMode: ((TaskModeSetting) -> Void)?
+    var onRefreshTasks: (() -> Void)?
+    var onStartTask: ((NocoDBTask) -> Void)?
 
     init(engine: PomodoroEngine, config: Config) {
         self.engine = engine
@@ -67,6 +81,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        taskModeItem.title = "Task Mode"
+        taskModeItem.submenu = buildTaskModeMenu()
+        menu.addItem(taskModeItem)
+
         let summaryItem = NSMenuItem(title: "History…",
                                      action: #selector(showSummary), keyEquivalent: "")
         summaryItem.target = self
@@ -87,8 +105,71 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         return menu
     }
 
+    private func buildTaskModeMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        for setting in TaskModeSetting.allCases {
+            let item = NSMenuItem(title: setting.title,
+                                  action: #selector(selectTaskMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = setting.rawValue
+            submenu.addItem(item)
+        }
+        return submenu
+    }
+
+    /// Rebuild the task rows just below the header. They only exist while task
+    /// mode is active, and are drawn from the cache — `menuNeedsUpdate` is
+    /// synchronous, so the network refresh it kicks off lands on a later open.
+    private func rebuildTaskItems(in menu: NSMenu) {
+        for item in taskItems { menu.removeItem(item) }
+        taskItems = []
+        guard isTaskModeActive() else { return }
+
+        onRefreshTasks?()
+        let tasks = Array(taskList().prefix(config.menuTaskLimit))
+        let today = Date()
+
+        var newItems: [NSMenuItem] = []
+        if tasks.isEmpty {
+            let empty = NSMenuItem(title: "No tasks for today", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            newItems.append(empty)
+        } else {
+            for task in tasks {
+                let item = NSMenuItem(title: task.label(today: today),
+                                      action: #selector(startTask(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = task
+                // Starting a task mid-pomodoro would have to seal the current
+                // one; keep it to the states where starting is already allowed.
+                item.isEnabled = canStartTask
+                newItems.append(item)
+            }
+        }
+        newItems.append(.separator())
+
+        for (offset, item) in newItems.enumerated() {
+            menu.insertItem(item, at: 2 + offset) // after header + separator
+        }
+        taskItems = newItems
+    }
+
+    private var canStartTask: Bool {
+        switch engine.state {
+        case .idle, .taskCompletePrompt, .breakCompletePrompt: return true
+        case .runningTask, .onBreak: return false
+        }
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         headerItem.title = headerText()
+        rebuildTaskItems(in: menu)
+
+        let setting = taskModeSetting()
+        taskModeItem.submenu?.items.forEach {
+            $0.state = ($0.representedObject as? String) == setting.rawValue ? .on : .off
+        }
 
         // Refresh on every open: the user can also toggle it in System Settings.
         loginItem.isEnabled = LoginItemManager.isAvailable
@@ -145,6 +226,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showSummary() { onShowSummary?() }
+
+    @objc private func selectTaskMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let setting = TaskModeSetting(rawValue: raw) else { return }
+        onSelectTaskMode?(setting)
+    }
+
+    @objc private func startTask(_ sender: NSMenuItem) {
+        guard let task = sender.representedObject as? NocoDBTask else { return }
+        onStartTask?(task)
+    }
     @objc private func toggleLoginItem() { try? LoginItemManager.setEnabled(!LoginItemManager.isEnabled) }
     @objc private func quit() { NSApp.terminate(nil) }
 
